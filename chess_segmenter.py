@@ -5,6 +5,8 @@ from typing import List, Dict, Any, Tuple
 import cv2
 import numpy as np
 import pytesseract
+from sklearn.cluster import DBSCAN
+
 
 import os
 from datetime import datetime
@@ -103,6 +105,12 @@ def process_chess_layout(image_path: str):
         columns.append((start_x, img_w))
 
     # === Step 2: Detect rows *within* each column ===
+    avg_dim = (img_w + img_h) / 2
+    min_h = avg_dim * 0.005
+    max_h = avg_dim * 0.08
+    min_area = (avg_dim * 0.005) ** 2
+    max_area = (avg_dim * 0.08) ** 2
+    boxes = []
     for (x1, x2) in columns:
         col_img = binary[:, x1:x2]
         horizontal_sum = np.sum(col_img // 255, axis=1)
@@ -117,19 +125,49 @@ def process_chess_layout(image_path: str):
                 in_row = True
             elif val <= horizontal_thresh and in_row:
                 y1, y2 = start_y, y
-                cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 0, 255), 1)
+                w = x2 - x1
+                h = y2 - y1
+                area = w * h
+                aspect = w / (h + 1e-5)
+
+                is_too_thin_line = (w > img_w * 0.4 and h < img_h * 0.015)
+                is_page_edge_line = (y1 < img_h * 0.1 or y2 > img_h * 0.9)
+
+                # === Filtering ===
+                if (
+                    not (is_too_thin_line or (is_too_thin_line and is_page_edge_line)) and
+                    min_area < area < max_area and  # ignore noise/smudges
+                    min_h < h < max_h and           # reasonable text height
+                    0.2 < aspect < 6.0 and          # avoid tall or very wide boxes
+                    not (aspect > 10 and h < min_h * 2)  # remove thin long lines
+                ):
+                    cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 0, 255), 1)
+                    boxes.append({
+                        "x": x1,
+                        "y": y1,
+                        "w": w,
+                        "h": h,
+                        "cx": x1 + w / 2,
+                        "cy": y1 + h / 2,
+                        "area": area
+                    })
+
                 in_row = False
+
+
+
 
         # === Step 3: Find small index-like contours within this column ===
         contours, _ = cv2.findContours(col_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
         for c in contours:
-            bx, by, bw, bh = cv2.boundingRect(c)
-            if is_index_candidate((bx, by, bw, bh), col_img.shape):
-                print('might bhe an index')
-                # Offset x by column start
-                cv2.rectangle(vis, (x1 + bx, by), (x1 + bx + bw, by + bh), (0, 255, 0), 1)
-            else:
-                print('no way')
+            x, y, w, h = cv2.boundingRect(c)
+            
+    # print(boxes)
+    boxes = filter_boxes_by_size(boxes, img_w, img_h)
+
+    
+    vis = draw_moves(vis,boxes)
 
     # === Save visualization ===
     timestamp = datetime.now().strftime("%H%M%S_%Y%m%d")
@@ -137,7 +175,76 @@ def process_chess_layout(image_path: str):
     writefile(output_path, vis)
     print(f"Saved: {output_path}")
 
-    # === Save visualization ===
+def filter_boxes_by_size(boxes: List[Dict[str, float]], img_w: int, img_h: int) -> List[Dict[str, float]]:
+    """Remove boxes that are too large or too small compared to expected handwriting size."""
+    if not boxes:
+        return []
+
+    areas = np.array([b["area"] for b in boxes])
+    median_area = np.median(areas)
+    iqr = np.percentile(areas, 75) - np.percentile(areas, 25)
+    min_area = max(median_area * 0.3, np.percentile(areas, 25) - 1.5 * iqr)
+    max_area = min(median_area * 3.5, np.percentile(areas, 75) + 1.5 * iqr)
+
+    avg_dim = (img_w + img_h) / 2
+    min_h = avg_dim * 0.005
+    max_h = avg_dim * 0.08
+
+    filtered = []
+    for b in boxes:
+        aspect = b["w"] / (b["h"] + 1e-5)
+        if (
+            min_area < b["area"] < max_area and
+            min_h < b["h"] < max_h and
+            0.2 < aspect < 4.0
+        ):
+            filtered.append(b)
+
+    print(f"Filtered {len(boxes)} → {len(filtered)} boxes (removed {len(boxes)-len(filtered)} noise)")
+    return filtered
+
+def draw_moves(vis, boxes, eps_y=25, eps_x=80, min_samples=2):
+    """
+    Group boxes into move rows and draw a green rectangle for each move.
+    - eps_y: vertical clustering distance tolerance
+    - eps_x: horizontal clustering distance tolerance
+    """
+    print('enter draw moves')
+    if not boxes:
+        return
+
+    # Create a 2D feature array: (cx, cy)
+    X = np.array([[b["cx"], b["cy"]] for b in boxes])
+
+    # Scale y-distance less aggressively than x so rows stay distinct
+    X_scaled = X.copy()
+    X_scaled[:, 0] /= eps_x
+    X_scaled[:, 1] /= eps_y
+
+    # Perform clustering
+    clustering = DBSCAN(eps=1.0, min_samples=min_samples).fit(X_scaled)
+    labels = clustering.labels_
+
+    # Group by label
+    unique_labels = set(labels)
+    for label in unique_labels:
+        if label == -1:
+            continue  # -1 = noise, skip
+
+        cluster_boxes = [b for b, l in zip(boxes, labels) if l == label]
+        if not cluster_boxes:
+            continue
+
+        # Compute enclosing rectangle for all boxes in this cluster
+        x_min = min(b["x"] for b in cluster_boxes)
+        y_min = min(b["y"] for b in cluster_boxes)
+        x_max = max(b["x"] + b["w"] for b in cluster_boxes)
+        y_max = max(b["y"] + b["h"] for b in cluster_boxes)
+
+        # Draw green rectangle for this move group
+        cv2.rectangle(vis, (int(x_min), int(y_min)), (int(x_max), int(y_max)), (0, 255, 0), 2)
+
+    return vis
 
 
 def _ocr_words(image: np.ndarray) -> List[Dict[str, Any]]:
@@ -310,8 +417,8 @@ def main():
     good_img = '/Users/adlaiabdelrazaq/Documents/code/personal/25/chess_image_analyzer/img/src/1759549223658-IMG_293F39624621-1.jpeg'
     bad_img = '/Users/adlaiabdelrazaq/Documents/code/personal/25/chess_image_analyzer/img/src/IMG_2F54EA6661FD-1.jpeg'
 
-    # img_path = good_img
-    img_path = bad_img
+    img_path = good_img
+    # img_path = bad_img
     result = process_chess_layout(img_path)
     print(json.dumps(result, indent=2))
 

@@ -1,0 +1,4 @@
+opencv-python>=4.10.0
+numpy<2.0.0,>=1.23.5
+pytesseract>=0.3.10
+scikit-learn>=1.4.0
