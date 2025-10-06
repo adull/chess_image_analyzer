@@ -5,12 +5,14 @@ from typing import List, Dict, Any, Tuple
 import cv2
 import numpy as np
 import pytesseract
+
+import os
 from datetime import datetime
 
-def writefile(image_path: str):
+def writefile(output_path: str, image_data):
     try:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        success = cv2.imwrite(output_path, cleaned)
+        success = cv2.imwrite(output_path, image_data)
         if success:
             print(f"✅ Cleaned image saved to {output_path}")
         else:
@@ -45,16 +47,77 @@ def _preprocess(image: np.ndarray) -> np.ndarray:
     cleaned = cv2.morphologyEx(merged, cv2.MORPH_OPEN, kernel, iterations=1)
     cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel, iterations=1)
 
-    timestamp = datetime.now().strftime("%H-%Y-%m--%d")
-    filename = f"cleaned_{timestamp}.png"
-    output_path = os.path.join("img", "generated", filename)
+    # write to file
+    # timestamp = datetime.now().strftime("%H%M%S_%Y%m%d")
+    # filename = f"cleaned_{timestamp}.png"
+    # output_path = os.path.join("img", "generated", filename)
 
-    writefile(output_path)
+    # writefile(output_path, cleaned)
 
 
 
     return cleaned
 
+
+def process_chess_layout(image_path: str):
+    image, img_w, img_h = _read_image(image_path)
+    binary = _preprocess(image)
+
+    # Invert so that text = 1, background = 0
+    binary_inv = cv2.bitwise_not(binary)
+
+    # --- Column detection ---
+    vertical_sum = np.sum(binary_inv, axis=0)
+    vertical_thresh = np.max(vertical_sum) * 0.1
+    cols = []
+    in_gap = False
+    start = 0
+
+    for x, val in enumerate(vertical_sum):
+        if val > vertical_thresh and not in_gap:
+            start = x
+            in_gap = True
+        elif val <= vertical_thresh and in_gap:
+            cols.append((start, x))
+            in_gap = False
+    if in_gap:
+        cols.append((start, img_w))
+
+    # --- Row detection ---
+    horizontal_sum = np.sum(binary_inv, axis=1)
+    horizontal_thresh = np.max(horizontal_sum) * 0.1
+    rows = []
+    in_gap = False
+    start = 0
+
+    for y, val in enumerate(horizontal_sum):
+        if val > horizontal_thresh and not in_gap:
+            start = y
+            in_gap = True
+        elif val <= horizontal_thresh and in_gap:
+            rows.append((start, y))
+            in_gap = False
+    if in_gap:
+        rows.append((start, img_h))
+
+    # Prepare visualization image
+    vis = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+
+    # Draw detected columns (green)
+    for (x1, x2) in cols:
+        cv2.rectangle(vis, (x1, 0), (x2, img_h), (0, 255, 0), 1)
+
+    # Draw detected rows (red)
+    for (y1, y2) in rows:
+        cv2.rectangle(vis, (0, y1), (img_w, y2), (0, 0, 255), 1)
+
+
+
+    timestamp = datetime.now().strftime("%H%M%S_%Y%m%d")
+    filename = f"layout_LINES{timestamp}.png"
+    output_path = os.path.join("img", "generated", filename)
+
+    writefile(output_path, vis)
 
 def _ocr_words(image: np.ndarray) -> List[Dict[str, Any]]:
     config = "--oem 1 --psm 6 -c tessedit_char_whitelist=0123456789.ABCDEFGHabcdefghNBRQKOx+-=#!?()[]{}.,;:"
@@ -227,7 +290,8 @@ def main():
     bad_img = '/Users/adlaiabdelrazaq/Documents/code/personal/25/chess_image_analyzer/img/src/IMG_2F54EA6661FD-1.jpeg'
 
     img_path = good_img
-    result = process_chess_image(img_path)
+    # result = process_chess_image(img_path)
+    result = process_chess_layout(img_path)
     print(json.dumps(result, indent=2))
 
 
