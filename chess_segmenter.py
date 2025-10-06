@@ -28,96 +28,117 @@ def _read_image(image_path: str) -> Tuple[np.ndarray, int, int]:
     return image, w, h
 
 
-def _preprocess(image: np.ndarray) -> np.ndarray:
+def _preprocess(image: np.ndarray, target_width: int = 1200) -> tuple[np.ndarray, float]:
+    """Preprocess image to produce a clean binary mask and scale factor."""
+    h, w = image.shape[:2]
+
+    # Scale image if it's too large
+    scale = 1.0
+    if w > target_width:
+        scale = target_width / float(w)
+        new_w, new_h = int(w * scale), int(h * scale)
+        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # Try both normal and inverted adaptive threshold to cope with dark/light backgrounds
+    # Adaptive threshold (normal + inverted)
     th1 = cv2.adaptiveThreshold(
         gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 25, 15
     )
     th2 = cv2.adaptiveThreshold(
         255 - gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 25, 15
     )
-
-    # Merge to be robust
     merged = cv2.bitwise_or(th1, th2)
 
-    # Morphological open/close to clean small noise and connect characters
+    # Clean up small artifacts
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     cleaned = cv2.morphologyEx(merged, cv2.MORPH_OPEN, kernel, iterations=1)
     cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel, iterations=1)
 
-    # write to file
-    # timestamp = datetime.now().strftime("%H%M%S_%Y%m%d")
-    # filename = f"cleaned_{timestamp}.png"
-    # output_path = os.path.join("img", "generated", filename)
+    return cleaned, scale
 
-    # writefile(output_path, cleaned)
+def is_index_candidate(box, img_shape):
+    """
+    Heuristic check for boxes that look like move indices.
+    Works for any image size by using relative proportions.
+    """
+    x, y, w, h = box
+    img_h, img_w = img_shape[:2]
+    aspect = w / float(h)
 
+    # Relative to image height (makes it scale-invariant)
+    rel_h = h / float(img_h)
+    rel_w = w / float(img_w)
 
-
-    return cleaned
+    # Typically indices are small and tall
+    return (0.2 < aspect < 1.0) and (0.015 < rel_h < 0.08) and (0.005 < rel_w < 0.05)
 
 
 def process_chess_layout(image_path: str):
-    image, img_w, img_h = _read_image(image_path)
-    binary = _preprocess(image)
+    """Detect chess move columns, rows, and potential index regions."""
+    image = cv2.imread(image_path)
+    if image is None:
+        raise ValueError(f"Could not read image: {image_path}")
 
-    # Invert so that text = 1, background = 0
-    binary_inv = cv2.bitwise_not(binary)
-
-    # --- Column detection ---
-    vertical_sum = np.sum(binary_inv, axis=0)
-    vertical_thresh = np.max(vertical_sum) * 0.1
-    cols = []
-    in_gap = False
-    start = 0
-
-    for x, val in enumerate(vertical_sum):
-        if val > vertical_thresh and not in_gap:
-            start = x
-            in_gap = True
-        elif val <= vertical_thresh and in_gap:
-            cols.append((start, x))
-            in_gap = False
-    if in_gap:
-        cols.append((start, img_w))
-
-    # --- Row detection ---
-    horizontal_sum = np.sum(binary_inv, axis=1)
-    horizontal_thresh = np.max(horizontal_sum) * 0.1
-    rows = []
-    in_gap = False
-    start = 0
-
-    for y, val in enumerate(horizontal_sum):
-        if val > horizontal_thresh and not in_gap:
-            start = y
-            in_gap = True
-        elif val <= horizontal_thresh and in_gap:
-            rows.append((start, y))
-            in_gap = False
-    if in_gap:
-        rows.append((start, img_h))
-
-    # Prepare visualization image
+    binary, scale = _preprocess(image)
+    img_h, img_w = binary.shape
     vis = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
 
-    # Draw detected columns (green)
-    for (x1, x2) in cols:
-        cv2.rectangle(vis, (x1, 0), (x2, img_h), (0, 255, 0), 1)
+    # === Step 1: Detect columns ===
+    vertical_sum = np.sum(binary // 255, axis=0)
+    vertical_sum = cv2.GaussianBlur(vertical_sum.astype(np.float32), (51, 1), 0)
+    vertical_thresh = np.max(vertical_sum) * 0.3
 
-    # Draw detected rows (red)
-    for (y1, y2) in rows:
-        cv2.rectangle(vis, (0, y1), (img_w, y2), (0, 0, 255), 1)
+    columns = []
+    in_col = False
+    start_x = 0
+    for x, val in enumerate(vertical_sum):
+        if val > vertical_thresh and not in_col:
+            start_x = x
+            in_col = True
+        elif val <= vertical_thresh and in_col:
+            columns.append((start_x, x))
+            in_col = False
+    if in_col:
+        columns.append((start_x, img_w))
 
+    # === Step 2: Detect rows *within* each column ===
+    for (x1, x2) in columns:
+        col_img = binary[:, x1:x2]
+        horizontal_sum = np.sum(col_img // 255, axis=1)
+        horizontal_sum = cv2.GaussianBlur(horizontal_sum.astype(np.float32), (1, 31), 0)
+        horizontal_thresh = np.max(horizontal_sum) * 0.3
 
+        in_row = False
+        start_y = 0
+        for y, val in enumerate(horizontal_sum):
+            if val > horizontal_thresh and not in_row:
+                start_y = y
+                in_row = True
+            elif val <= horizontal_thresh and in_row:
+                y1, y2 = start_y, y
+                cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 0, 255), 1)
+                in_row = False
 
+        # === Step 3: Find small index-like contours within this column ===
+        contours, _ = cv2.findContours(col_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for c in contours:
+            bx, by, bw, bh = cv2.boundingRect(c)
+            if is_index_candidate((bx, by, bw, bh), col_img.shape):
+                print('might bhe an index')
+                # Offset x by column start
+                cv2.rectangle(vis, (x1 + bx, by), (x1 + bx + bw, by + bh), (0, 255, 0), 1)
+            else:
+                print('no way')
+
+    # === Save visualization ===
     timestamp = datetime.now().strftime("%H%M%S_%Y%m%d")
-    filename = f"layout_LINES{timestamp}.png"
-    output_path = os.path.join("img", "generated", filename)
-
+    output_path = os.path.join("img", "generated", f"layoutLINES_{timestamp}.png")
     writefile(output_path, vis)
+    print(f"Saved: {output_path}")
+
+    # === Save visualization ===
+
 
 def _ocr_words(image: np.ndarray) -> List[Dict[str, Any]]:
     config = "--oem 1 --psm 6 -c tessedit_char_whitelist=0123456789.ABCDEFGHabcdefghNBRQKOx+-=#!?()[]{}.,;:"
@@ -289,8 +310,8 @@ def main():
     good_img = '/Users/adlaiabdelrazaq/Documents/code/personal/25/chess_image_analyzer/img/src/1759549223658-IMG_293F39624621-1.jpeg'
     bad_img = '/Users/adlaiabdelrazaq/Documents/code/personal/25/chess_image_analyzer/img/src/IMG_2F54EA6661FD-1.jpeg'
 
-    img_path = good_img
-    # result = process_chess_image(img_path)
+    # img_path = good_img
+    img_path = bad_img
     result = process_chess_layout(img_path)
     print(json.dumps(result, indent=2))
 
