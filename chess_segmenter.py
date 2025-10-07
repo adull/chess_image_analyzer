@@ -175,6 +175,29 @@ def process_chess_layout(image_path: str):
     writefile(output_path, vis)
     print(f"Saved: {output_path}")
 
+    mask = np.zeros_like(binary, dtype=np.uint8)
+
+    for box in boxes:
+        x1 = int(box["x"])
+        y1 = int(box["y"])
+        x2 = int(box["x"] + box["w"])
+        y2 = int(box["y"] + box["h"])
+        cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
+
+    # Apply mask to original image
+    masked_image = cv2.bitwise_and(image, image, mask=mask)
+
+    # Optional: make outside pixels white
+    white_bg = np.full_like(image, 255)
+    final = np.where(mask[:, :, None] == 255, masked_image, white_bg)
+
+    # === Save cropped output ===
+    timestamp = datetime.now().strftime("%H%M%S_%Y%m%d")
+    output_masked_path = os.path.join("img", "generated", f"layoutCROPPED_{timestamp}.png")
+    writefile(output_masked_path, final)
+    print(f"Saved masked image: {output_masked_path}")
+
+
 def filter_boxes_by_size(boxes: List[Dict[str, float]], img_w: int, img_h: int) -> List[Dict[str, float]]:
     """Remove boxes that are too large or too small compared to expected handwriting size."""
     if not boxes:
@@ -187,7 +210,7 @@ def filter_boxes_by_size(boxes: List[Dict[str, float]], img_w: int, img_h: int) 
     max_area = min(median_area * 3.5, np.percentile(areas, 75) + 1.5 * iqr)
 
     avg_dim = (img_w + img_h) / 2
-    min_h = avg_dim * 0.005
+    min_h = avg_dim * 0.01
     max_h = avg_dim * 0.08
 
     filtered = []
@@ -417,8 +440,8 @@ def main():
     good_img = '/Users/adlaiabdelrazaq/Documents/code/personal/25/chess_image_analyzer/img/src/1759549223658-IMG_293F39624621-1.jpeg'
     bad_img = '/Users/adlaiabdelrazaq/Documents/code/personal/25/chess_image_analyzer/img/src/IMG_2F54EA6661FD-1.jpeg'
 
-    img_path = good_img
-    # img_path = bad_img
+    # img_path = good_img
+    img_path = bad_img
     result = process_chess_layout(img_path)
     print(json.dumps(result, indent=2))
 
