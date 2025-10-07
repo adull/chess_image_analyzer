@@ -7,7 +7,6 @@ import numpy as np
 import pytesseract
 from sklearn.cluster import DBSCAN
 
-
 import os
 from datetime import datetime
 
@@ -16,11 +15,14 @@ def writefile(output_path: str, image_data):
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         success = cv2.imwrite(output_path, image_data)
         if success:
+            return output_path
             print(f"✅ Cleaned image saved to {output_path}")
         else:
+            return ''
             print(f"⚠️ Failed to write image file: {output_path}")
     except Exception as e:
         print(f"⚠️ Could not save cleaned image ({type(e).__name__}): {e}")
+        return ''
 
 def _read_image(image_path: str) -> Tuple[np.ndarray, int, int]:
     image = cv2.imread(image_path)
@@ -194,8 +196,9 @@ def process_chess_layout(image_path: str):
     # === Save cropped output ===
     timestamp = datetime.now().strftime("%H%M%S_%Y%m%d")
     output_masked_path = os.path.join("img", "generated", f"layoutCROPPED_{timestamp}.png")
-    writefile(output_masked_path, final)
+    generated_file = writefile(output_masked_path, final)
     print(f"Saved masked image: {output_masked_path}")
+    return generated_file
 
 
 def filter_boxes_by_size(boxes: List[Dict[str, float]], img_w: int, img_h: int) -> List[Dict[str, float]]:
@@ -351,18 +354,20 @@ def process_chess_image(image_path: str) -> List[Dict[str, Any]]:
     image, img_w, img_h = _read_image(image_path)
 
     # 1) Segmentation (ink-on-paper regions)
-    binary = _preprocess(image)
+    # binary = _preprocess(image)
 
     # Optional: use detected line regions to bias parsing (available if needed)
-    _ = _segment_lines(binary)
+    # _ = _segment_lines(image)
 
     # 2) OCR and sequential move extraction
     words = _ocr_words(image)
+    print(words)
 
     # Build index: line -> list of words (left-to-right)
     from collections import defaultdict
     line_to_words: Dict[Tuple[int, int, int], List[Dict[str, Any]]] = defaultdict(list)
     for w in words:
+        print(w['text'])
         key = (w["block_num"], w["par_num"], w["line_num"])  # stable grouping
         line_to_words[key].append(w)
     for key in line_to_words:
@@ -440,10 +445,14 @@ def main():
     good_img = '/Users/adlaiabdelrazaq/Documents/code/personal/25/chess_image_analyzer/img/src/1759549223658-IMG_293F39624621-1.jpeg'
     bad_img = '/Users/adlaiabdelrazaq/Documents/code/personal/25/chess_image_analyzer/img/src/IMG_2F54EA6661FD-1.jpeg'
 
-    # img_path = good_img
-    img_path = bad_img
-    result = process_chess_layout(img_path)
-    print(json.dumps(result, indent=2))
+    img_path = good_img
+    # img_path = bad_img
+    mask_file = process_chess_layout(img_path)
+    print(mask_file)
+    moves = process_chess_image(mask_file)
+    print("*")
+    print(moves)
+    # print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
