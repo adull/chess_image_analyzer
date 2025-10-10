@@ -1,4 +1,16 @@
-opencv-python>=4.10.0
-numpy<2.0.0,>=1.23.5
-pytesseract>=0.3.10
+# ===== CORE =====
+numpy>=1.23.5,<2.0.0
 scikit-learn>=1.4.0
+editdistance>=0.6.2
+path>=16.10.0
+
+# ===== COMPUTER VISION =====
+opencv-python>=4.10.0
+onnxruntime-silicon>=1.16.0  # Silicon build for Apple M1/M2/M3
+
+# ===== OCR / HTR =====
+pytesseract>=0.3.10
+paddleocr>=2.7.0
+
+# ===== DEBUGGING / VISUALIZATION =====
+matplotlib>=3.8.0
