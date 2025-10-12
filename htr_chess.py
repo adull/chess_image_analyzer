@@ -27,10 +27,8 @@ def writefile(output_path: str, image_data):
         return ''
 
 def process_htr_page(image):
-    
-    # original_image = cv2.imread(image_path)
     if image is None:
-        raise ValueError(f"Needs image image")
+        raise ValueError("Needs image image")
 
     # Run HTR pipeline
     detector_cfg = DetectorConfig()
@@ -41,20 +39,43 @@ def process_htr_page(image):
     if len(vis_img.shape) == 2:  # grayscale -> BGR
         vis_img = cv2.cvtColor(vis_img, cv2.COLOR_GRAY2BGR)
 
-    # Draw lines and characters
+    img_h, img_w = vis_img.shape[:2]
+    boxes = []  # to collect box data
+
     for line in page:
         for word in line:
             x1, y1, x2, y2 = word.aabb.xmin, word.aabb.ymin, word.aabb.xmax, word.aabb.ymax
+            w = x2 - x1
+            h = y2 - y1
+
+            # Convert to percentage
+            left_pct = (x1 / img_w) * 100
+            top_pct = (y1 / img_h) * 100
+            width_pct = (w / img_w) * 100
+            height_pct = (h / img_h) * 100
+
+            # Add to boxes list
+            boxes.append({
+                "text": word.text,
+                "top": round(top_pct, 4),
+                "left": round(left_pct, 4),
+                "width": round(width_pct, 4),
+                "height": round(height_pct, 4)
+            })
+
+            # Draw overlay (optional)
             cv2.rectangle(vis_img, (x1, y1), (x2, y2), (0, 0, 0), 1)
             cv2.putText(vis_img, word.text, (x1, y1 - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
 
+    timestamp = datetime.now().strftime("%H%M%S_%Y%m%d")
+    output_path = os.path.join("img", "generated", f"htr_overlayyy_{timestamp}.png")
+    writefile(output_path, vis_img)
 
-    # timestamp = datetime.now().strftime("%H%M%S_%Y%m%d")
-    # output_path = os.path.join("img", "generated", f"htr_overlay_{timestamp}.png")
-    # writefile(output_path, vis_img)
-
-    return page
+    return {
+        "boxes": boxes,
+        "imageSize": {"width": img_w, "height": img_h}
+    }
 
 def cluster_rows(aabbs, eps=25):
     """Cluster boxes into rows based on vertical proximity."""
@@ -100,9 +121,9 @@ def draw_table(image, page):
     for x in col_centers:
         cv2.line(out, (int(x), 0), (int(x), out.shape[0]), color, 1)
 
-    timestamp = datetime.now().strftime("%H%M%S_%Y%m%d")
-    output_path = os.path.join("img", "generated", f"htr_overlay_{timestamp}.png")
-    writefile(output_path, out)
+    # timestamp = datetime.now().strftime("%H%M%S_%Y%m%d")
+    # output_path = os.path.join("img", "generated", f"htr_overlay_{timestamp}.png")
+    # writefile(output_path, out)
 
 
 
@@ -116,9 +137,11 @@ def main():
     # img_path = bad_img
 
     image = cv2.imread(img_path)
-    page = process_htr_page(image)
-    draw_table(image,page)
-
+    data = process_htr_page(image)
+    # draw_table(image,page)
+    print('**')
+    print(data)
+    return data
 
 
 
